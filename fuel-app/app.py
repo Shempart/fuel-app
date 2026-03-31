@@ -120,6 +120,8 @@ class Station(db.Model):
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
 class PriceSnapshot(db.Model):
     __tablename__ = "price_snapshots"
 
@@ -130,6 +132,20 @@ class PriceSnapshot(db.Model):
     price = db.Column(db.Float, nullable=False)
     currency = db.Column(db.String(3), default="PLN", nullable=False)
     collected_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+def get_lang():
+    lang = request.args.get("lang", "ru").lower()
+    if lang not in TRANSLATIONS:
+        lang = "ru"
+    return lang
+
+
+def clean_text(text: str) -> str:
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
 
 def normalize_station_name(text: str) -> str:
     text = clean_text(text).lower()
@@ -149,19 +165,6 @@ def normalize_station_address(text: str) -> str:
 
 def normalize_station_key(name: str, address: str) -> tuple[str, str]:
     return normalize_station_name(name), normalize_station_address(address)
-
-
-def get_lang():
-    lang = request.args.get("lang", "ru").lower()
-    if lang not in TRANSLATIONS:
-        lang = "ru"
-    return lang
-
-
-def clean_text(text: str) -> str:
-    text = text.replace("\xa0", " ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
 
 
 def parse_place(raw_place: str) -> tuple[str, str]:
@@ -305,15 +308,12 @@ def sync_cenapaliw_to_db():
         name_norm, address_norm = normalize_station_key(item["name"], item["address"])
         key = (name_norm, address_norm)
 
-        if key not in unique_items:
-            unique_items[key] = item
-            unique_items[key]["name_norm"] = name_norm
-            unique_items[key]["address_norm"] = address_norm
-        else:
-            if item["price"] < unique_items[key]["price"]:
-                unique_items[key] = item
-                unique_items[key]["name_norm"] = name_norm
-                unique_items[key]["address_norm"] = address_norm
+        if key not in unique_items or item["price"] < unique_items[key]["price"]:
+            unique_items[key] = {
+                **item,
+                "name_norm": name_norm,
+                "address_norm": address_norm,
+            }
 
     saved = 0
 
@@ -363,6 +363,7 @@ def sync_cenapaliw_to_db():
 
     db.session.commit()
     return saved
+
 
 def get_latest_price_for_station(station_id: int):
     return (
@@ -422,12 +423,7 @@ def compute_score(station):
 @app.route("/")
 def index():
     lang = get_lang()
-
-    if Station.query.count() == 0:
-        sync_cenapaliw_to_db()
-
     stations = build_stations()
-
     return render_template(
         "index.html",
         stations=stations,
@@ -440,6 +436,11 @@ def index():
 def sync():
     saved = sync_cenapaliw_to_db()
     return f"OK. Saved snapshots: {saved}"
+
+
+@app.route("/version")
+def version():
+    return "v1-sync"
 
 
 @app.route("/api/stations")
